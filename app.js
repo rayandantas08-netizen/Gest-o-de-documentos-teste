@@ -57,7 +57,7 @@
   }
 
   function disclaimer() {
-    return `<div class="demo-disclaimer"><span class="disclaimer-icon" aria-hidden="true">i</span><span><strong>Conteúdo fictício:</strong> esta prévia não está ligada ao Núcleo original, ao Drive nem a um banco de dados. Botões e formulários são demonstrações e nada é salvo.</span></div>`;
+    return `<div class="demo-disclaimer"><span class="disclaimer-icon" aria-hidden="true">i</span><span><strong>DEMO</strong> sem conexão com Drive/banco.</span></div>`;
   }
 
   function pageHeader(kicker, title, subtitle, action = '') {
@@ -79,7 +79,7 @@
       .filter((doc) => !query || [doc.name, doc.person, doc.type, doc.company].some((value) => value.toLocaleLowerCase('pt-BR').includes(query)))
       .slice(0, 4);
     const actions = `<button class="button button-primary" type="button" data-action="add-person"><span aria-hidden="true">＋</span> Nova pessoa</button><button class="button button-secondary" type="button" data-action="add-document"><span aria-hidden="true">＋</span> Novo documento</button>`;
-    return `${disclaimer()}${pageHeader('PAINEL DE CONFORMIDADE', 'Visão geral', 'Acompanhe a situação documental da operação e priorize os próximos vencimentos.', actions)}
+    return `${disclaimer()}${pageHeader('PAINEL DE CONFORMIDADE', 'Visão geral', 'Pessoas, documentos e prazos em um só lugar.', actions)}
       <section class="stats-grid" aria-label="Indicadores fictícios">
         ${renderStat('Pessoas cadastradas', '24', 'Total fictício · amostra de 6 perfis', '<svg viewBox="0 0 20 20"><circle cx="8" cy="6.5" r="3"/><path d="M2.5 17a5.5 5.5 0 0 1 11 0M14 4a3 3 0 0 1 0 5.8M15 12a4.5 4.5 0 0 1 2.5 4"/></svg>')}
         ${renderStat('Documentos monitorados', '48', 'Total fictício · amostra de 8 itens', '<svg viewBox="0 0 20 20"><path d="M5 2.5h7l3.5 3.5v11H5zM12 2.5V6h3.5M8 10h4.5M8 13h4.5"/></svg>')}
