@@ -1,3 +1,13 @@
+if (window.APP_CONFIG?.mode === 'production') {
+  document.documentElement.classList.add('production-loading');
+  import('./production-app.mjs')
+    .then(({ startProductionApp }) => startProductionApp())
+    .catch(() => {
+      const content = document.getElementById('page-content');
+      if (content) content.textContent = 'Não foi possível carregar o ambiente conectado. Atualize a página ou contate o administrador.';
+      document.documentElement.classList.remove('production-loading');
+    });
+} else {
 (() => {
   const demoPeople = [
     { id: 'p01', name: 'Pessoa de Demonstração 01', role: 'Analista de Operações', department: 'Operações', company: 'Empresa Exemplo', documents: 5 },
@@ -103,7 +113,7 @@
           <div class="activity-list"><div class="activity-item"><span class="activity-dot"></span><div class="activity-copy"><strong>Documento associado a um cadastro fictício</strong><span>Certificado de treinamento · registro demonstrativo</span></div><span class="activity-time">Hoje</span></div><div class="activity-item"><span class="activity-dot amber"></span><div class="activity-copy"><strong>Prazo próximo para revisão</strong><span>Contrato de prestação de serviços · dado de exemplo</span></div><span class="activity-time">Ontem</span></div><div class="activity-item"><span class="activity-dot"></span><div class="activity-copy"><strong>Tipo documental revisado</strong><span>Qualificação · ação simulada</span></div><span class="activity-time">Esta semana</span></div></div>
         </article>
         <article class="panel"><div class="panel-header"><div><p class="panel-kicker">ATALHOS</p><h2 class="panel-title">Ações rápidas</h2></div></div>
-          <div class="quick-actions"><button class="quick-action" type="button" data-action="add-person"><span class="quick-action-icon">＋</span><span><strong>Cadastrar pessoa</strong><small>Abre formulário de exemplo</small></span></button><button class="quick-action" type="button" data-action="add-document"><span class="quick-action-icon">＋</span><span><strong>Adicionar documento</strong><small>Sem envio de arquivo nesta fase</small></span></button><button class="quick-action" type="button" data-action="new-type"><span class="quick-action-icon">⌑</span><span><strong>Novo tipo documental</strong><small>Simulação sem persistência</small></span></button><button class="quick-action" type="button" data-view="settings"><span class="quick-action-icon">↗</span><span><strong>Ver evolução planejada</strong><small>Hostinger + banco + Drive</small></span></button></div>
+          <div class="quick-actions"><button class="quick-action" type="button" data-action="add-person"><span class="quick-action-icon">＋</span><span><strong>Cadastrar pessoa</strong><small>Abre formulário de exemplo</small></span></button><button class="quick-action" type="button" data-action="add-document"><span class="quick-action-icon">＋</span><span><strong>Adicionar documento</strong><small>Sem envio de arquivo nesta fase</small></span></button><button class="quick-action" type="button" data-action="new-type"><span class="quick-action-icon">⌑</span><span><strong>Novo tipo documental</strong><small>Simulação sem persistência</small></span></button><button class="quick-action" type="button" data-view="settings"><span class="quick-action-icon">↗</span><span><strong>Ver evolução planejada</strong><small>Render + Supabase + Drive</small></span></button></div>
         </article>
       </section>`;
   }
@@ -158,9 +168,9 @@
         <div class="setting-row"><span><strong>Persistência de dados</strong><small>Registros fictícios em memória nesta tela</small></span><span class="setting-value">NÃO ATIVADA</span></div>
         <div class="setting-row"><span><strong>Conta e perfis de acesso</strong><small>Autenticação ainda não implementada</small></span><span class="setting-value pending">FASE FUTURA</span></div>
         <div class="setting-row"><span><strong>Google Drive</strong><small>Nenhum arquivo real conectado</small></span><span class="setting-value pending">PENDENTE</span></div>
-        <div class="setting-row"><span><strong>Servidor da aplicação</strong><small>Hostinger como objetivo da versão operacional</small></span><span class="setting-value pending">NÃO CONFIGURADO</span></div>
+        <div class="setting-row"><span><strong>Servidor da aplicação</strong><small>Render como destino da versão operacional</small></span><span class="setting-value pending">AGUARDANDO PLANO</span></div>
       </article>
-      <aside class="future-card"><p class="panel-kicker">OBJETIVO DE PRODUÇÃO · OPÇÃO 3</p><h2>Uma base preparada para crescer.</h2><p>O protótipo ilustra a experiência. A versão real deverá incluir login, permissões, banco de dados e acesso seguro aos arquivos do Drive.</p><div class="future-steps"><div class="future-step"><span>1</span><strong>Aplicação e backend na Hostinger</strong><em>PLANEJADO</em></div><div class="future-step"><span>2</span><strong>Banco de dados e perfis</strong><em>PLANEJADO</em></div><div class="future-step"><span>3</span><strong>Integração autorizada com Drive</strong><em>PLANEJADO</em></div></div></aside></section>
+      <aside class="future-card"><p class="panel-kicker">OBJETIVO DE PRODUÇÃO · OPÇÃO 3</p><h2>Uma base preparada para crescer.</h2><p>O protótipo ilustra a experiência. A versão real deverá incluir login, permissões, banco de dados e acesso seguro aos arquivos do Drive.</p><div class="future-steps"><div class="future-step"><span>1</span><strong>Aplicação e backend no Render</strong><em>PLANEJADO</em></div><div class="future-step"><span>2</span><strong>Banco de dados e perfis</strong><em>PLANEJADO</em></div><div class="future-step"><span>3</span><strong>Integração autorizada com Drive</strong><em>PLANEJADO</em></div></div></aside></section>
       <section class="panel" style="margin-top:13px;padding:15px"><p class="panel-kicker">IMPORTANTE</p><p class="settings-note">Antes de usar documentos empresariais reais, será necessário aprovar perfis de acesso, armazenamento, auditoria, cópias de segurança, retenção e medidas de privacidade. Esta tela não altera o projeto nem prepara a infraestrutura de produção.</p></section>`;
   }
 
@@ -287,3 +297,4 @@
 
   renderCurrentView();
 })();
+}
