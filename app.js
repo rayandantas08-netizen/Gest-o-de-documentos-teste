@@ -166,7 +166,7 @@ if (window.APP_CONFIG?.mode === 'production') {
     return `${disclaimer()}${pageHeader('ADMINISTRAÇÃO', 'Configurações', 'Esta prévia usa dados fictícios e permanece separada do ambiente funcional hospedado no Render.')}
       <section class="settings-grid"><article class="panel settings-card"><h2>Separação de ambientes</h2><p>O GitHub Pages exibe apenas a demonstração. O modo conectado do Render/Supabase é independente e não altera estes dados.</p>
         <div class="setting-row"><span><strong>Persistência de dados</strong><small>Registros fictícios em memória nesta tela</small></span><span class="setting-value">NÃO ATIVADA</span></div>
-        <div class="setting-row"><span><strong>Conta e perfis de acesso</strong><small>Login ativo no modo conectado; primeira conta autorizada pendente</small></span><span class="setting-value pending">ADMIN PENDENTE</span></div>
+        <div class="setting-row"><span><strong>Conta e perfis de acesso</strong><small>Convite enviado; vínculo à empresa depende do nome autorizado</small></span><span class="setting-value pending">VÍNCULO PENDENTE</span></div>
         <div class="setting-row"><span><strong>Google Drive</strong><small>Nenhum arquivo real conectado</small></span><span class="setting-value pending">PENDENTE</span></div>
         <div class="setting-row"><span><strong>Servidor da aplicação</strong><small>Modo conectado ativo no Render; esta tela continua demonstrativa</small></span><span class="setting-value">SERVIÇO ATIVO</span></div>
       </article>

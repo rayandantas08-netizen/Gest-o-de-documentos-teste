@@ -8,7 +8,7 @@ Este repositório mantém dois modos separados. O GitHub Pages continua servindo
 - O modo conectado exige login; o banco aplica Row Level Security (RLS) por organização e perfil.
 - O servidor só aceita chave publishable Supabase (ou chave legada JWT com `role=anon`) e JWT da sessão. A inicialização falha fechada se a chave ou a origem não forem válidas.
 - Nunca colocar chave administrativa, senha de banco ou credenciais no repositório, navegador ou logs.
-- O cadastro público não está habilitado. A primeira conta administradora e o vínculo à organização aguardam o e-mail autorizado.
+- O cadastro público não está habilitado. O convite da primeira conta administrativa já foi enviado após confirmação; a associação à empresa cliente aguarda o nome correto da organização.
 - Os cookies de sessão são `HttpOnly`, `Secure` quando o site usa HTTPS e `SameSite=Lax`; a origem pública HTTPS exige `COOKIE_SECURE=true`.
 - Cabeçalhos contra clickjacking impedem a abertura do portal dentro de iframes. O limite de login é por conta e não confia em `X-Forwarded-For` enviado pelo cliente, mas fica em memória por processo. O serviço deve permanecer em uma instância até esse mecanismo ser substituído por um rate limiter compartilhado/de borda; reinícios limpam contadores.
 - O banco armazena metadados. Nenhum arquivo é carregado, aberto, baixado ou tornado público nesta etapa; a integração Google Drive ainda exige OAuth e permissões aprovadas.
@@ -30,4 +30,4 @@ As migrações versionadas estão em `supabase/migrations/`; o esquema inicial, 
 - `production-app.mjs`/`production.css`: telas conectadas; sem sessão, mostra login; usuário sem associação vê estado pendente.
 - `app.js`/`runtime-config.js`: demonstração fictícia no GitHub Pages. O modo conectado não usa os dados da demonstração.
 - As políticas RLS separam dados por organização e papel; um trigger impede mover registros para outra organização.
-- O primeiro administrador precisa ser associado a uma organização por um processo autorizado; o e-mail ainda não foi indicado.
+- O convite da primeira conta foi enviado com autorização explícita para o papel `owner`; a associação à organização da empresa ainda aguarda seu nome exato.
