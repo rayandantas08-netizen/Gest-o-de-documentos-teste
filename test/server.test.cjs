@@ -126,6 +126,104 @@ test('login aceita somente origem configurada e mantém tokens em cookies HttpOn
   }
 });
 
+test('callback do convite remove tokens da URL e falha fechado em formatos query/PKCE não configurados', async () => {
+  const { readSupabaseInviteCallback } = await import('../production-app.mjs');
+  const accepted = readSupabaseInviteCallback({
+    pathname:'/', search:'?keep=1',
+    hash:'#access_token=invite-access-token-abcdefghijklmnopqrstuvwxyz&refresh_token=invite-refresh-token-abcdefghijklmnopqrstuvwxyz&type=invite&expires_in=3600'
+  });
+  assert.deepEqual(accepted, { kind:'invite', accessToken:'invite-access-token-abcdefghijklmnopqrstuvwxyz', cleanUrl:'/?keep=1' });
+  assert.doesNotMatch(JSON.stringify(accepted), /invite-refresh-token/);
+  const expired = readSupabaseInviteCallback({ pathname:'/', hash:'#error=access_denied&error_code=otp_expired&error_description=Expired' });
+  assert.deepEqual(expired, { kind:'error', errorCode:'otp_expired', cleanUrl:'/' });
+  const tokenHash = readSupabaseInviteCallback({ pathname:'/auth/confirm', search:'?token_hash=secret-token-hash&type=invite&keep=2' });
+  assert.deepEqual(tokenHash, { kind:'unsupported', cleanUrl:'/auth/confirm?keep=2' });
+  const pkce = readSupabaseInviteCallback({ pathname:'/', search:'?code=secret-auth-code' });
+  assert.deepEqual(pkce, { kind:'unsupported', cleanUrl:'/' });
+});
+
+test('aceite de convite valida access token, define senha e emite sessão somente após novo login do mesmo usuário', async () => {
+  const originalFetch = global.fetch;
+  const accessToken = 'invite-access-token-abcdefghijklmnopqrstuvwxyz';
+  const password = 'Senha segura escolhida pela pessoa 2026';
+  global.fetch = async (url, options) => {
+    assert.equal(options.headers.apikey, process.env.SUPABASE_PUBLISHABLE_KEY);
+    if (String(url) === 'https://test-project.supabase.co/auth/v1/user' && options.method === 'GET') {
+      assert.equal(options.headers.Authorization, `Bearer ${accessToken}`);
+      return new Response(JSON.stringify({ id:'00000000-0000-4000-8000-000000000099', email:'admin@example.test' }), { status:200, headers:{ 'Content-Type':'application/json' } });
+    }
+    if (String(url) === 'https://test-project.supabase.co/auth/v1/user' && options.method === 'PUT') {
+      assert.equal(options.headers.Authorization, `Bearer ${accessToken}`);
+      assert.deepEqual(JSON.parse(options.body), { password });
+      return new Response(JSON.stringify({ id:'00000000-0000-4000-8000-000000000099', email:'admin@example.test' }), { status:200, headers:{ 'Content-Type':'application/json' } });
+    }
+    assert.equal(String(url), 'https://test-project.supabase.co/auth/v1/token?grant_type=password');
+    assert.equal(options.method, 'POST');
+    assert.deepEqual(JSON.parse(options.body), { email:'admin@example.test', password });
+    return new Response(JSON.stringify({ access_token:'fresh-session-access-token', refresh_token:'fresh-session-refresh-token', expires_in:3600, user:{ id:'00000000-0000-4000-8000-000000000099', email:'admin@example.test' } }), { status:200, headers:{ 'Content-Type':'application/json' } });
+  };
+  try {
+    const response = await request('/api/auth/complete-invite', {
+      method:'POST',
+      headers:{ Origin:'https://portal.example.test', 'Content-Type':'application/json' },
+      body:JSON.stringify({ access_token:accessToken, password })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(response.body), { user:{ id:'00000000-0000-4000-8000-000000000099', email:'admin@example.test' }, authenticated:true });
+    assert.doesNotMatch(response.body, /invite-access-token|fresh-session-access-token|fresh-session-refresh-token/);
+    const cookies = response.headers['set-cookie'];
+    assert.equal(cookies.length, 2);
+    assert.ok(cookies.every((cookie) => /HttpOnly/i.test(cookie) && /Secure/i.test(cookie) && /SameSite=Lax/i.test(cookie)));
+    assert.ok(cookies.some((cookie) => cookie.startsWith('nucleo_access=') && cookie.includes('fresh-session-access-token')));
+    assert.ok(cookies.some((cookie) => cookie.startsWith('nucleo_refresh=') && cookie.includes('fresh-session-refresh-token')));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('aceite de convite não emite cookies se o novo login retornar outro usuário', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options) => {
+    if (String(url).endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id:'00000000-0000-4000-8000-000000000099', email:'admin@example.test' }), { status:200 });
+    if (options.method === 'PUT') return new Response(JSON.stringify({ id:'00000000-0000-4000-8000-000000000099', email:'admin@example.test' }), { status:200 });
+    return new Response(JSON.stringify({ access_token:'other-session-access-token', refresh_token:'other-session-refresh-token', user:{ id:'00000000-0000-4000-8000-000000000088', email:'other@example.test' } }), { status:200 });
+  };
+  try {
+    const response = await request('/api/auth/complete-invite', {
+      method:'POST', headers:{ Origin:'https://portal.example.test', 'Content-Type':'application/json' },
+      body:JSON.stringify({ access_token:'invite-access-token-abcdefghijklmnopqrstuvwxyz', password:'Senha segura escolhida pela pessoa 2026' })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(response.body), { user:{ id:'00000000-0000-4000-8000-000000000099', email:'admin@example.test' }, authenticated:false });
+    assert.equal(response.headers['set-cookie'], undefined);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('aceite de convite rejeita origem externa e payload incompleto sem chamar Supabase', async () => {
+  const originalFetch = global.fetch;
+  let called = false;
+  global.fetch = async () => { called = true; throw new Error('upstream must not be called'); };
+  try {
+    const external = await request('/api/auth/complete-invite', {
+      method:'POST',
+      headers:{ Origin:'https://attacker.example', 'Content-Type':'application/json' },
+      body:JSON.stringify({ access_token:'invite-access-token-abcdefghijklmnopqrstuvwxyz', password:'Senha segura escolhida pela pessoa 2026' })
+    });
+    assert.equal(external.status, 403);
+    const invalid = await request('/api/auth/complete-invite', {
+      method:'POST',
+      headers:{ Origin:'https://portal.example.test', 'Content-Type':'application/json' },
+      body:JSON.stringify({ access_token:'short', password:'curta' })
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(called, false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('origem externa é rejeitada antes de chamar o serviço de autenticação', async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => { throw new Error('upstream must not be called'); };

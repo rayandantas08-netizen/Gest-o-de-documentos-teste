@@ -2,6 +2,28 @@ const VIEW_TITLES = { overview:'Visão geral', people:'Pessoas', documents:'Docu
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
 const initials = (value) => String(value || 'NU').trim().split(/\s+/).filter(Boolean).slice(0,2).map((part) => part[0]).join('').toLocaleUpperCase('pt-BR') || 'NU';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const AUTH_CALLBACK_KEYS = ['access_token','refresh_token','token_hash','code','type','error','error_code','error_description','expires_in','token_type','sb'];
+
+export function readSupabaseInviteCallback({ pathname = '/', search = '', hash = '' } = {}) {
+  const queryText = String(search).replace(/^\?/, '');
+  const query = new URLSearchParams(queryText);
+  const cleanQuery = new URLSearchParams(queryText);
+  for (const key of AUTH_CALLBACK_KEYS) cleanQuery.delete(key);
+  const remainder = cleanQuery.toString();
+  const cleanUrl = `${pathname}${remainder ? `?${remainder}` : ''}`;
+  if (AUTH_CALLBACK_KEYS.some((key) => query.has(key))) return { kind:'unsupported', cleanUrl };
+  const fragment = String(hash).replace(/^#/, '');
+  if (!fragment) return { kind:'none', cleanUrl };
+  const params = new URLSearchParams(fragment);
+  const errorCode = params.get('error_code');
+  if (params.has('error') || errorCode) return { kind:'error', errorCode, cleanUrl };
+  if (params.get('type') === 'invite') {
+    const accessToken = params.get('access_token');
+    return accessToken ? { kind:'invite', accessToken, cleanUrl } : { kind:'invalid', cleanUrl };
+  }
+  if (params.has('access_token') || params.has('refresh_token') || params.has('type')) return { kind:'invalid', cleanUrl };
+  return { kind:'none', cleanUrl };
+}
 
 export function startProductionApp() {
   const content = document.getElementById('page-content');
@@ -14,6 +36,7 @@ export function startProductionApp() {
   const ribbon = document.querySelector('.prototype-ribbon');
   const state = { user:null, membership:null, organization:null, role:'viewer', view:'overview', query:'', department:'all', docFilter:'all', people:[], types:[], documents:[], busy:false };
   let toastTimer;
+  let pendingInvite = null;
   let dialogOpener = null;
   content.innerHTML = '<div class="connection-loading">Verificando a sessão segura…</div>';
   document.title = 'Núcleo · Gestão documental';
@@ -29,7 +52,7 @@ export function startProductionApp() {
     const raw = await response.text();
     let payload = null;
     try { payload = raw ? JSON.parse(raw) : null; } catch { payload = { error:'Resposta inválida do servidor.' }; }
-    if (response.status === 401 && !['/api/auth/login','/api/auth/session'].includes(path)) {
+    if (response.status === 401 && !['/api/auth/login','/api/auth/session','/api/auth/complete-invite'].includes(path)) {
       state.user = null; state.membership = null; state.organization = null;
       showLogin('Sua sessão terminou. Entre novamente.');
       const error = new Error('Sessão expirada. Entre novamente.'); error.status = 401; throw error;
@@ -62,6 +85,7 @@ export function startProductionApp() {
   }
   function roleLabel(role) { return ({ owner:'Proprietário', manager:'Gestor', editor:'Editor', viewer:'Consulta' })[role] || 'Membro'; }
   function showLogin(message = '') {
+    pendingInvite = null;
     state.people = []; state.types = []; state.documents = [];
     document.body.classList.add('production-auth');
     document.body.classList.remove('production-pending','production-connection-error');
@@ -74,6 +98,41 @@ export function startProductionApp() {
     </section>`;
     if (ribbon) ribbon.setAttribute('aria-label','Ambiente conectado, acesso restrito');
     document.getElementById('login-email')?.focus();
+  }
+  function showInvitePasswordForm(message = '') {
+    state.people = []; state.types = []; state.documents = [];
+    document.body.classList.add('production-auth');
+    document.body.classList.remove('production-pending','production-connection-error');
+    if (search) { search.value = ''; search.disabled = true; search.closest('.search-box')?.setAttribute('hidden',''); }
+    content.innerHTML = `<section class="auth-screen" aria-labelledby="invite-title">
+      <div class="auth-story"><span class="auth-eyebrow">NÚCLEO · GESTÃO DOCUMENTAL</span><h1 id="invite-title">Seu acesso começa com uma senha segura.</h1><p>Defina uma senha pessoal para concluir o convite. O portal só mostrará dados depois da associação à empresa.</p><div class="auth-trust"><span>01</span><div><strong>Convite protegido</strong><small>O link é individual e não deve ser compartilhado.</small></div></div></div>
+      <div class="auth-card"><img src="./public/brand-mark.svg" width="42" height="42" alt=""><p class="page-kicker">CONVITE DA EQUIPE</p><h2>Crie sua senha</h2><p class="auth-intro">Escolha uma senha com pelo menos 12 caracteres e confirme para continuar.</p>
+        <form id="invite-password-form" novalidate><label class="form-field"><span>Nova senha</span><input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label><label class="form-field"><span>Confirmar senha</span><input name="password_confirm" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label><p class="auth-error" id="invite-error" role="alert" ${message ? '' : 'hidden'}>${esc(message)}</p><button class="button button-primary auth-submit" type="submit">Definir senha <span aria-hidden="true">→</span></button></form>
+        <p class="auth-help">Depois da senha, o sistema verifica sua associação à empresa.</p></div>
+    </section>`;
+    if (ribbon) ribbon.setAttribute('aria-label','Ambiente conectado, aceite de convite');
+    document.querySelector('#invite-password-form input[name="password"]')?.focus();
+  }
+  function consumeAuthCallback() {
+    const callback = readSupabaseInviteCallback({ pathname:window.location.pathname, search:window.location.search, hash:window.location.hash });
+    if (callback.kind === 'none') return false;
+    window.history.replaceState(null, document.title, callback.cleanUrl);
+    if (callback.kind === 'unsupported') {
+      showLogin('Este link usa um formato diferente do convite padrão configurado. Solicite um novo convite ao administrador.');
+      return true;
+    }
+    if (callback.kind === 'error') {
+      showLogin(callback.errorCode === 'otp_expired' ? 'Este convite expirou ou já foi usado. Solicite um novo link ao administrador.' : 'Não foi possível validar este link. Solicite um novo convite ao administrador.');
+      return true;
+    }
+    if (callback.kind === 'invite') {
+      // O template padrão Supabase usa ConfirmationURL e retorna access_token/type=invite no fragmento.
+      pendingInvite = { access_token:callback.accessToken };
+      showInvitePasswordForm();
+      return true;
+    }
+    showLogin('Este link não corresponde a um convite válido. Solicite um novo link ao administrador.');
+    return true;
   }
   function showPending(message = 'Sua conta foi reconhecida, mas ainda não está associada a uma organização.') {
     document.body.classList.add('production-pending');
@@ -129,6 +188,38 @@ export function startProductionApp() {
       form.elements.password.value = '';
       form.elements.email.focus();
     } finally { state.busy = false; }
+  }
+  async function completeInvite(form) {
+    if (state.busy || !pendingInvite) return;
+    const password = form.elements.namedItem('password').value;
+    const confirmation = form.elements.namedItem('password_confirm').value;
+    const errorBox = document.getElementById('invite-error');
+    const button = form.querySelector('[type="submit"]');
+    if (password.length < 12 || password.length > 1024) {
+      errorBox.textContent = 'A senha deve ter entre 12 e 1024 caracteres.'; errorBox.hidden = false; return;
+    }
+    if (password !== confirmation) {
+      errorBox.textContent = 'As senhas não são iguais.'; errorBox.hidden = false; return;
+    }
+    state.busy = true; button.disabled = true; button.textContent = 'Configurando…'; errorBox.hidden = true;
+    try {
+      const result = await api('/api/auth/complete-invite', { method:'POST', body:JSON.stringify({ ...pendingInvite, password }) });
+      form.reset(); pendingInvite = null;
+      if (!result.authenticated) {
+        showLogin('Sua senha foi criada. Entre com o e-mail do convite e a nova senha para continuar.');
+        const emailInput = document.getElementById('login-email');
+        if (emailInput && result.user?.email) emailInput.value = result.user.email;
+        return;
+      }
+      state.user = result.user;
+      await loadAuthenticatedWorkspace();
+    } catch (error) {
+      if (error.status === 401) { pendingInvite = null; showLogin(error.message); }
+      else if (errorBox.isConnected) { errorBox.textContent = error.message; errorBox.hidden = false; }
+    } finally {
+      state.busy = false;
+      if (button.isConnected) { button.disabled = false; button.innerHTML = 'Definir senha <span aria-hidden="true">→</span>'; }
+    }
   }
   function queryUrl(table, params) { return `/api/data/${table}?${new URLSearchParams(params).toString()}`; }
   async function loadWorkspace() {
@@ -302,6 +393,7 @@ export function startProductionApp() {
 
   document.addEventListener('submit', (event) => {
     if (event.target.id === 'login-form') { event.preventDefault(); login(event.target); }
+    if (event.target.id === 'invite-password-form') { event.preventDefault(); completeInvite(event.target); }
     if (event.target.id === 'record-form') { event.preventDefault(); saveRecord(event.target); }
   });
   document.addEventListener('click', async (event) => {
@@ -336,5 +428,6 @@ export function startProductionApp() {
     if (event.key === 'Escape' && dialog.open) dialog.close();
   });
   dialog?.addEventListener('close', () => { if (dialogOpener instanceof HTMLElement && dialogOpener.isConnected) dialogOpener.focus(); dialogOpener = null; });
-  checkSession().catch(() => showLogin('Não foi possível conectar ao serviço agora. Tente novamente.')).finally(() => document.documentElement.classList.remove('production-loading'));
+  if (consumeAuthCallback()) document.documentElement.classList.remove('production-loading');
+  else checkSession().catch(() => showLogin('Não foi possível conectar ao serviço agora. Tente novamente.')).finally(() => document.documentElement.classList.remove('production-loading'));
 }

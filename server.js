@@ -239,6 +239,46 @@ async function handleAuth(req, res, pathname) {
     setAuthCookies(res, tokens);
     return json(res, 200, { user:userSummary(tokens.user) });
   }
+  if (pathname === '/api/auth/complete-invite' && req.method === 'POST') {
+    const body = await readJson(req);
+    const validToken = (value) => typeof value === 'string' && value.length >= 20 && value.length <= 8192 && value.trim() === value && !/[\u0000-\u0020\u007f]/.test(value);
+    if (!validToken(body.access_token) || typeof body.password !== 'string' || body.password.length < 12 || body.password.length > 1024) {
+      return json(res, 400, { error:'O link ou a senha não são válidos. Confira os campos e tente novamente.' });
+    }
+    let identityResponse;
+    try {
+      identityResponse = await upstream('/auth/v1/user', { method:'GET', headers:{ Authorization:`Bearer ${body.access_token}` } });
+    } catch { return json(res, 502, { error:'O serviço de autenticação está temporariamente indisponível.' }); }
+    const identity = await identityResponse.json().catch(() => ({}));
+    const email = typeof identity.email === 'string' ? identity.email.trim() : '';
+    if (!identityResponse.ok || !UUID_RE.test(String(identity.id || '')) || !email || email.length > 254) {
+      return json(res, 401, { error:'O convite é inválido, expirou ou já foi usado. Solicite um novo link.' });
+    }
+    let updateResponse;
+    try {
+      updateResponse = await upstream('/auth/v1/user', {
+        method:'PUT',
+        headers:{ Authorization:`Bearer ${body.access_token}`, 'Content-Type':'application/json' },
+        body:JSON.stringify({ password:body.password })
+      });
+    } catch { return json(res, 502, { error:'O serviço de autenticação está temporariamente indisponível.' }); }
+    const user = await updateResponse.json().catch(() => ({}));
+    if (!updateResponse.ok || !UUID_RE.test(String(user.id || '')) || user.id !== identity.id) {
+      return json(res, 401, { error:'O convite é inválido, expirou ou já foi usado. Solicite um novo link.' });
+    }
+    let loginResponse;
+    try {
+      loginResponse = await upstream('/auth/v1/token?grant_type=password', {
+        method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ email, password:body.password })
+      });
+    } catch { return json(res, 200, { user:userSummary(user), authenticated:false }); }
+    const session = await loginResponse.json().catch(() => ({}));
+    if (!loginResponse.ok || !validToken(session.access_token) || !validToken(session.refresh_token) || !UUID_RE.test(String(session.user?.id || '')) || session.user.id !== user.id) {
+      return json(res, 200, { user:userSummary(user), authenticated:false });
+    }
+    setAuthCookies(res, session);
+    return json(res, 200, { user:userSummary(session.user), authenticated:true });
+  }
   if (pathname === '/api/auth/session' && req.method === 'GET') {
     const session = await currentUser(req, res);
     if (!session) { clearAuthCookies(res); return json(res, 401, { authenticated:false }); }
