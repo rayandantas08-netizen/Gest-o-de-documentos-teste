@@ -163,15 +163,15 @@ if (window.APP_CONFIG?.mode === 'production') {
   }
 
   function renderSettings() {
-    return `${disclaimer()}${pageHeader('ADMINISTRAÇÃO', 'Configurações', 'Visão demonstrativa da arquitetura e das opções de controle previstas para uma futura versão funcional.')}
-      <section class="settings-grid"><article class="panel settings-card"><h2>Ambiente de demonstração</h2><p>Estas opções mostram onde os controles poderiam aparecer. Nada está conectado nem pode ser alterado nesta prévia.</p>
+    return `${disclaimer()}${pageHeader('ADMINISTRAÇÃO', 'Configurações', 'Esta prévia usa dados fictícios e permanece separada do ambiente funcional hospedado no Render.')}
+      <section class="settings-grid"><article class="panel settings-card"><h2>Separação de ambientes</h2><p>O GitHub Pages exibe apenas a demonstração. O modo conectado do Render/Supabase é independente e não altera estes dados.</p>
         <div class="setting-row"><span><strong>Persistência de dados</strong><small>Registros fictícios em memória nesta tela</small></span><span class="setting-value">NÃO ATIVADA</span></div>
-        <div class="setting-row"><span><strong>Conta e perfis de acesso</strong><small>Autenticação ainda não implementada</small></span><span class="setting-value pending">FASE FUTURA</span></div>
+        <div class="setting-row"><span><strong>Conta e perfis de acesso</strong><small>Login ativo no modo conectado; primeira conta autorizada pendente</small></span><span class="setting-value pending">ADMIN PENDENTE</span></div>
         <div class="setting-row"><span><strong>Google Drive</strong><small>Nenhum arquivo real conectado</small></span><span class="setting-value pending">PENDENTE</span></div>
-        <div class="setting-row"><span><strong>Servidor da aplicação</strong><small>Render como destino da versão operacional</small></span><span class="setting-value pending">AGUARDANDO PLANO</span></div>
+        <div class="setting-row"><span><strong>Servidor da aplicação</strong><small>Modo conectado ativo no Render; esta tela continua demonstrativa</small></span><span class="setting-value">SERVIÇO ATIVO</span></div>
       </article>
-      <aside class="future-card"><p class="panel-kicker">OBJETIVO DE PRODUÇÃO · OPÇÃO 3</p><h2>Uma base preparada para crescer.</h2><p>O protótipo ilustra a experiência. A versão real deverá incluir login, permissões, banco de dados e acesso seguro aos arquivos do Drive.</p><div class="future-steps"><div class="future-step"><span>1</span><strong>Aplicação e backend no Render</strong><em>PLANEJADO</em></div><div class="future-step"><span>2</span><strong>Banco de dados e perfis</strong><em>PLANEJADO</em></div><div class="future-step"><span>3</span><strong>Integração autorizada com Drive</strong><em>PLANEJADO</em></div></div></aside></section>
-      <section class="panel" style="margin-top:13px;padding:15px"><p class="panel-kicker">IMPORTANTE</p><p class="settings-note">Antes de usar documentos empresariais reais, será necessário aprovar perfis de acesso, armazenamento, auditoria, cópias de segurança, retenção e medidas de privacidade. Esta tela não altera o projeto nem prepara a infraestrutura de produção.</p></section>`;
+      <aside class="future-card"><p class="panel-kicker">STATUS DA VERSÃO FUNCIONAL</p><h2>O ambiente conectado está em operação.</h2><p>Render e Supabase estão conectados para autenticação e metadados. O Drive exige OAuth e permissões próprias antes de abrir ou baixar arquivos reais.</p><div class="future-steps"><div class="future-step"><span>1</span><strong>Aplicação e backend no Render</strong><em>ATIVO</em></div><div class="future-step"><span>2</span><strong>Supabase e RLS por organização</strong><em>ATIVO · VAZIO</em></div><div class="future-step"><span>3</span><strong>Conta administrativa e integração Drive</strong><em>PENDENTE</em></div></div></aside></section>
+      <section class="panel" style="margin-top:13px;padding:15px"><p class="panel-kicker">IMPORTANTE</p><p class="settings-note">Antes de usar documentos empresariais reais, revisar perfis de acesso, auditoria, cópias de segurança, retenção e medidas de privacidade. Os cartões desta tela continuam fictícios e não editam o ambiente conectado.</p></section>`;
   }
 
   function renderCurrentView() {
