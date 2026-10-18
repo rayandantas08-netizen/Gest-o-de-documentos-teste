@@ -1,13 +1,25 @@
-# Núcleo — protótipo visual
+# Núcleo — Gestão Documental & Google Drive
 
-Protótipo estático de gestão documental para demonstração. As pessoas, empresas, documentos, contagens e datas mostrados no site são fictícios.
+Aplicação de gestão documental com integração de armazenamento conectada ao **Google Drive**.
 
-- Nenhuma ação salva ou altera dados.
-- Não há conexão com Google Drive, banco de dados ou backend.
-- Não usar este protótipo para armazenar documentos reais ou dados pessoais.
+## Integração com o Google Drive
 
-## GitHub Pages
+- **Pasta de Armazenamento Dedicada**: `Núcleo - Gestão Documental`
+- **ID da Pasta no Drive**: `1EyOr4vYGl16cgbfx9e7y_XQjduJRtrhQ`
+- **Link Direto**: [Acessar Pasta no Google Drive](https://drive.google.com/drive/folders/1EyOr4vYGl16cgbfx9e7y_XQjduJRtrhQ)
+- **Destino dos Arquivos**: Todos os documentos e uploads são direcionados para o Google Drive ao invés do armazenamento do Supabase, centralizando os arquivos na conta da organização.
 
-O site é servido a partir da raiz do branch `main`. O arquivo inicial é `index.html`; CSS desktop, camada mobile, JavaScript e favicon ficam nos arquivos/pasta ao lado. Os caminhos relativos permitem servir o site sob o endereço do repositório. Em celular, o painel usa cabeçalho compacto e navegação inferior para as cinco áreas.
+## Recursos do Portal
 
-A futura integração de produção com Hostinger, backend, banco de dados e Google Drive não faz parte deste protótipo.
+1. **Visão Geral**: Indicadores operacionais, pendências e atalhos rápidos.
+2. **Pessoas**: Cadastro de colaboradores e vínculo aos documentos no Drive.
+3. **Documentos**: Upload de arquivos, controle de validade e acesso direto ao Google Drive.
+4. **Tipos Documentais**: Configuração de categorias e regras de renovação.
+5. **Configurações**: Status da conexão e gerenciamento do Google Drive.
+
+## Estrutura dos Arquivos
+
+- `index.html`: Estrutura principal da interface com ribbon de conexão ativa e atalho para o Drive.
+- `app.js`: Lógica da aplicação, formulários de upload e persistência local.
+- `styles.css`: Estilos desktop, componentes e status do Google Drive.
+- `mobile.css`: Layout adaptado para navegação em dispositivos móveis.
