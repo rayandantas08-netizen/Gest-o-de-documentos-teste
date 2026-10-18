@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { URL } = require('node:url');
 const crypto = require('node:crypto');
+const drive = require('./google-drive.js');
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT || 3000);
@@ -30,7 +31,7 @@ const TABLE_ACCESS = {
   organizations: { methods:new Set(['GET']), columns:['id','name','created_at'], filters:new Set(['id']), orderColumns:new Set(), insert:new Set(), patch:new Set() },
   people: { methods:new Set(['GET','POST','PATCH']), columns:['id','organization_id','full_name','job_title','department','company_name','is_active','created_at','updated_at'], filters:new Set(['id','organization_id','is_active']), orderColumns:new Set(['full_name']), insert:new Set(['organization_id','full_name','job_title','department','company_name']), patch:new Set(['full_name','job_title','department','company_name']) },
   document_types: { methods:new Set(['GET','POST','PATCH']), columns:['id','organization_id','name','category','validity_months','is_required','created_at','updated_at'], filters:new Set(['id','organization_id']), orderColumns:new Set(['name']), insert:new Set(['organization_id','name','category','validity_months','is_required']), patch:new Set(['name','category','validity_months','is_required']) },
-  documents: { methods:new Set(['GET','POST','PATCH']), columns:['id','organization_id','person_id','document_type_id','title','expires_on','review_status','created_at','updated_at'], filters:new Set(['id','organization_id']), orderColumns:new Set(['expires_on']), insert:new Set(['organization_id','person_id','document_type_id','title','expires_on']), patch:new Set(['person_id','document_type_id','title','expires_on']) }
+  documents: { methods:new Set(['GET','POST','PATCH']), columns:['id','organization_id','person_id','document_type_id','title','expires_on','review_status','drive_file_id','drive_file_name','mime_type','created_at','updated_at'], filters:new Set(['id','organization_id']), orderColumns:new Set(['expires_on']), insert:new Set(['organization_id','person_id','document_type_id','title','expires_on','drive_file_id','drive_file_name','mime_type']), patch:new Set(['person_id','document_type_id','title','expires_on','drive_file_id','drive_file_name','mime_type']) }
 };
 const loginBuckets = new Map();
 let readinessCache = { checkedAt:0, ready:false };
@@ -343,6 +344,464 @@ async function handleData(req, res, url) {
   res.writeHead(upstreamResponse.status, responseHeaders);
   res.end(responseText);
 }
+  // ---------------------------------------------------------------------------
+  // Integração Google Drive
+  // ---------------------------------------------------------------------------
+  const DRIVE_STATE_COOKIE = 'nucleo_drive_state';
+  const MAX_MULTIPART_PARTS = 24;
+  const WRITE_ROLES = new Set(['owner', 'manager', 'editor']);
+  const MANAGE_ROLES = new Set(['owner', 'manager']);
+  // O tipo é derivado da extensão: nunca confiamos no Content-Type informado pelo
+  // navegador, o que impede envio de HTML/SVG que pudesse ser executado no download.
+  const UPLOAD_TYPES = new Map([
+    ['pdf','application/pdf'],
+    ['doc','application/msword'],
+    ['docx','application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['xls','application/vnd.ms-excel'],
+    ['xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['csv','text/csv'],
+    ['txt','text/plain'],
+    ['rtf','application/rtf'],
+    ['odt','application/vnd.oasis.opendocument.text'],
+    ['ods','application/vnd.oasis.opendocument.spreadsheet'],
+    ['odp','application/vnd.oasis.opendocument.presentation'],
+    ['ppt','application/vnd.ms-powerpoint'],
+    ['pptx','application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+    ['png','image/png'],
+    ['jpg','image/jpeg'],
+    ['jpeg','image/jpeg'],
+    ['webp','image/webp'],
+    ['heic','image/heic']
+  ]);
+  let driveStatusCache = { checkedAt:0, signature:'', payload:null };
+  const uploadBuckets = new Map();
+  const UPLOAD_LIMIT_PER_WINDOW = 30;
+  const UPLOAD_WINDOW_MS = 15 * 60 * 1000;
+
+  function uploadLimited(userId) {
+    const now = Date.now();
+    for (const [key, entry] of uploadBuckets) if (now > entry.reset) uploadBuckets.delete(key);
+    const entry = uploadBuckets.get(userId) || { count:0, reset:now + UPLOAD_WINDOW_MS };
+    if (now > entry.reset) { entry.count = 0; entry.reset = now + UPLOAD_WINDOW_MS; }
+    entry.count += 1;
+    uploadBuckets.set(userId, entry);
+    return entry.count > UPLOAD_LIMIT_PER_WINDOW;
+  }
+
+  function sanitizeUploadFileName(value) {
+    const raw = String(value || '').replace(/\\/g, '/').split('/').pop() || '';
+    // eslint-disable-next-line no-control-regex
+    const cleaned = raw.replace(/[\u0000-\u001f\u007f]/g, '').replace(/[<>:"|?*]/g, '').trim().replace(/\s+/g, ' ');
+    if (!cleaned || cleaned.length > 180 || cleaned === '.' || cleaned === '..') return '';
+    return cleaned;
+  }
+
+  function uploadTypeFor(name) {
+    const extension = String(name).split('.').pop()?.toLocaleLowerCase('en-US') || '';
+    return UPLOAD_TYPES.get(extension) || null;
+  }
+
+  async function readMultipart(req, maxBytes) {
+    const contentType = String(req.headers['content-type'] || '');
+    const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+    if (!/^multipart\/form-data/i.test(contentType) || !boundaryMatch) {
+      const error = new Error('Envio inválido: o formulário deve usar multipart/form-data.');
+      error.status = 400;
+      throw error;
+    }
+    const boundary = (boundaryMatch[1] || boundaryMatch[2] || '').trim();
+    if (!boundary || boundary.length > 200) {
+      const error = new Error('Envio inválido.');
+      error.status = 400;
+      throw error;
+    }
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of req) {
+      total += chunk.length;
+      if (total > maxBytes + 8192) {
+        const error = new Error(`Arquivo maior que o limite de ${Math.round(maxBytes / 1024 / 1024)} MB.`);
+        error.status = 413;
+        throw error;
+      }
+      chunks.push(chunk);
+    }
+    const buffer = Buffer.concat(chunks);
+    const delimiter = Buffer.from(`--${boundary}`, 'latin1');
+    const fields = new Map();
+    let position = buffer.indexOf(delimiter);
+    if (position !== 0) {
+      const error = new Error('Envio inválido.');
+      error.status = 400;
+      throw error;
+    }
+    while (position >= 0 && position < buffer.length) {
+      const afterDelimiter = position + delimiter.length;
+      const marker = buffer.slice(afterDelimiter, afterDelimiter + 2).toString('latin1');
+      if (marker === '--') break;
+      if (marker !== '\r\n') {
+        const error = new Error('Envio inválido.');
+        error.status = 400;
+        throw error;
+      }
+      const headersStart = afterDelimiter + 2;
+      const headersEnd = buffer.indexOf('\r\n\r\n', headersStart);
+      if (headersEnd < 0) {
+        const error = new Error('Envio inválido.');
+        error.status = 400;
+        throw error;
+      }
+      const headerText = buffer.slice(headersStart, headersEnd).toString('latin1');
+      const bodyStart = headersEnd + 4;
+      const nextBoundary = buffer.indexOf(delimiter, bodyStart);
+      if (nextBoundary < 0) {
+        const error = new Error('Envio inválido.');
+        error.status = 400;
+        throw error;
+      }
+      const crlfBeforeBoundary = buffer.slice(nextBoundary - 2, nextBoundary).toString('latin1') === '\r\n';
+      const content = buffer.slice(bodyStart, crlfBeforeBoundary ? nextBoundary - 2 : nextBoundary);
+      const disposition = /content-disposition:[^\r\n]*form-data[^\r\n]*/i.exec(headerText)?.[0] || '';
+      const fieldName = /name="([^"]*)"/i.exec(disposition)?.[1] ?? '';
+      const fileName = /filename="([^"]*)"/i.exec(disposition)?.[1] ?? null;
+      const declaredType = /content-type:\s*([^\r\n;]+)/i.exec(headerText)?.[1]?.trim() || '';
+      if (!fieldName || fieldName.length > 64) {
+        const error = new Error('Envio inválido.');
+        error.status = 400;
+        throw error;
+      }
+      if (fields.size >= MAX_MULTIPART_PARTS) {
+        const error = new Error('Envio com campos demais.');
+        error.status = 400;
+        throw error;
+      }
+      fields.set(fieldName, { fileName, mimeType: declaredType, content });
+      position = nextBoundary;
+    }
+    return fields;
+  }
+
+  function textPart(part, maxLength) {
+    if (!part) return '';
+    return part.content.toString('utf8').slice(0, maxLength).trim();
+  }
+
+  async function supabaseRequest(req, res, session, path, { method = 'GET', body } = {}) {
+    const doRequest = (accessToken) => upstream(path, {
+      method,
+      headers: { Authorization:`Bearer ${accessToken}`, ...(body ? { 'Content-Type':'application/json', Prefer:'return=representation' } : {}) },
+      ...(body ? { body:JSON.stringify(body) } : {})
+    });
+    let response;
+    try {
+      response = await doRequest(session.accessToken);
+    } catch {
+      return { error:'O banco de dados está temporariamente indisponível.', status:502 };
+    }
+    if (response.status === 401) {
+      const tokens = await refresh(req, res);
+      if (!tokens) return { error:'Sessão expirada. Entre novamente.', status:401 };
+      try {
+        response = await doRequest(tokens.access_token);
+      } catch {
+        return { error:'O banco de dados está temporariamente indisponível.', status:502 };
+      }
+    }
+    return { response };
+  }
+
+  async function membershipRole(req, res, session, organizationId) {
+    const path = `/rest/v1/organization_members?select=organization_id,role&user_id=eq.${encodeURIComponent(session.user.id)}&organization_id=eq.${encodeURIComponent(organizationId)}&is_active=eq.true&limit=1`;
+    const { response, error } = await supabaseRequest(req, res, session, path);
+    if (error) return { role:null, error, status:502 };
+    if (!response.ok) return { role:null, error:'Não foi possível verificar suas permissões.', status:502 };
+    const rows = await response.json().catch(() => []);
+    return { role: rows?.[0]?.role || null };
+  }
+
+  async function requireDriveWrite(req, res, session, organizationId) {
+    if (!UUID_RE.test(String(organizationId || ''))) return { error:'Organização inválida.', status:400 };
+    const { role, error, status } = await membershipRole(req, res, session, organizationId);
+    if (error) return { error, status };
+    if (!role) return { error:'Sua conta não está associada a esta organização.', status:403 };
+    if (!WRITE_ROLES.has(role)) return { error:'Seu perfil não permite enviar arquivos.', status:403 };
+    return { role };
+  }
+
+  function driveFailure(res, error) {
+    if (error instanceof drive.DriveError) return json(res, error.status, { error:error.message });
+    console.error('drive_request_failed', error.name || 'Error');
+    return json(res, 502, { error:'Não foi possível concluir a operação no Google Drive.' });
+  }
+
+  async function handleDriveStatus(req, res) {
+    if (!sameOrigin(req)) return json(res, 403, { error:'Origem não permitida.' });
+    const session = await currentUser(req, res);
+    if (!session) { clearAuthCookies(res); return json(res, 401, { error:'Sessão expirada. Entre novamente.' }); }
+    const now = Date.now();
+    const signature = drive.configSignature(drive.readConfig());
+    if (driveStatusCache.payload && driveStatusCache.signature === signature && now - driveStatusCache.checkedAt < 30000) {
+      return json(res, 200, driveStatusCache.payload);
+    }
+    let payload;
+    try {
+      payload = await drive.status();
+    } catch (error) {
+      return driveFailure(res, error);
+    }
+    const safe = {
+      configured: payload.configured,
+      connected: payload.connected,
+      mode: payload.mode,
+      scopes: payload.scopes,
+      maxUploadBytes: payload.maxUploadBytes,
+      reason: payload.reason,
+      missing: payload.missing,
+      oauthReady: payload.oauthReady,
+      folder: payload.folder ? { id:payload.folder.id, name:payload.folder.name, webViewLink:payload.folder.webViewLink } : null,
+      account: payload.account ? { email:payload.account.email, name:payload.account.name } : null
+    };
+    driveStatusCache = { checkedAt:now, signature, payload:safe };
+    return json(res, 200, safe);
+  }
+
+  async function saveDriveDocument(req, res, session, { documentId = null } = {}) {
+    const config = drive.readConfig();
+    if (!drive.isConfigured(config)) {
+      return json(res, 503, { error:'A integração com o Google Drive ainda não está configurada neste ambiente.' });
+    }
+    let fields;
+    try {
+      fields = await readMultipart(req, config.maxUploadBytes);
+    } catch (error) {
+      return json(res, error.status || 400, { error:error.message });
+    }
+    const file = fields.get('file');
+    if (!file || !file.fileName) return json(res, 400, { error:'Selecione um arquivo para enviar ao Google Drive.' });
+    if (!file.content.length) return json(res, 400, { error:'O arquivo enviado está vazio.' });
+    if (file.content.length > config.maxUploadBytes) {
+      return json(res, 413, { error:`Arquivo maior que o limite de ${Math.round(config.maxUploadBytes / 1024 / 1024)} MB.` });
+    }
+
+    const organizationId = textPart(fields.get('organization_id'), 64);
+    const permission = await requireDriveWrite(req, res, session, organizationId);
+    if (permission.error) return json(res, permission.status, { error:permission.error });
+
+    const fileName = sanitizeUploadFileName(file.fileName);
+    const mimeType = uploadTypeFor(fileName);
+    if (!fileName) return json(res, 400, { error:'Nome de arquivo inválido.' });
+    if (!mimeType) return json(res, 400, { error:'Tipo de arquivo não permitido.' });
+
+    const title = textPart(fields.get('title'), 200);
+    const personId = textPart(fields.get('person_id'), 64);
+    const typeId = textPart(fields.get('document_type_id'), 64);
+    const expiresOn = textPart(fields.get('expires_on'), 10);
+    if (title.length < 2) return json(res, 400, { error:'Informe o título do documento.' });
+    if (personId && !UUID_RE.test(personId)) return json(res, 400, { error:'Pessoa inválida.' });
+    if (typeId && !UUID_RE.test(typeId)) return json(res, 400, { error:'Tipo documental inválido.' });
+    if (expiresOn && !/^\d{4}-\d{2}-\d{2}$/.test(expiresOn)) return json(res, 400, { error:'Data de vencimento inválida.' });
+
+    let uploaded;
+    try {
+      uploaded = await drive.uploadFile({ name:fileName, mimeType, content:file.content }, config);
+    } catch (error) {
+      return driveFailure(res, error);
+    }
+
+    const previousFileId = textPart(fields.get('previous_file_id'), 200);
+    const body = documentId
+      ? { drive_file_id:uploaded.id, drive_file_name:fileName, mime_type:mimeType }
+      : {
+        organization_id:organizationId,
+        title,
+        person_id:personId || null,
+        document_type_id:typeId || null,
+        expires_on:expiresOn || null,
+        drive_file_id:uploaded.id,
+        drive_file_name:fileName,
+        mime_type:mimeType
+      };
+    const path = documentId
+      ? `/rest/v1/documents?id=eq.${encodeURIComponent(documentId)}&organization_id=eq.${encodeURIComponent(organizationId)}`
+      : '/rest/v1/documents';
+    const { response, error } = await supabaseRequest(req, res, session, path, { method:documentId ? 'PATCH' : 'POST', body });
+    if (error) {
+      await drive.deleteFile(uploaded.id, config).catch(() => {});
+      return json(res, 502, { error });
+    }
+    if (!response.ok) {
+      await drive.deleteFile(uploaded.id, config).catch(() => {});
+      const payload = await response.json().catch(() => ({}));
+      return json(res, response.status === 401 ? 401 : 400, {
+        error:'Não foi possível salvar o documento. O arquivo enviado foi descartado.',
+        detail: typeof payload?.message === 'string' ? payload.message : null
+      });
+    }
+    const rows = await response.json().catch(() => []);
+    // Remove o arquivo substituído apenas depois de o banco confirmar a troca.
+    if (previousFileId && previousFileId !== uploaded.id && drive.FILE_ID_RE.test(previousFileId)) {
+      await drive.deleteFile(previousFileId, config).catch(() => {});
+    }
+    return json(res, documentId ? 200 : 201, { document:rows?.[0] || null, file:uploaded });
+  }
+
+  async function handleDriveFileDownload(req, res, fileId) {
+    if (!sameOrigin(req)) return json(res, 403, { error:'Origem não permitida.' });
+    if (!requireConfig(res)) return;
+    const session = await currentUser(req, res);
+    if (!session) { clearAuthCookies(res); return json(res, 401, { error:'Sessão expirada. Entre novamente.' }); }
+    if (!drive.FILE_ID_RE.test(String(fileId || ''))) return json(res, 404, { error:'Arquivo não encontrado.' });
+    const config = drive.readConfig();
+    if (!drive.isConfigured(config)) return json(res, 503, { error:'A integração com o Google Drive ainda não está configurada.' });
+    // A política de RLS de documents limita a consulta às organizações da conta autenticada,
+    // então nenhum arquivo de outra organização pode ser baixado pelo identificador.
+    const path = `/rest/v1/documents?select=id,organization_id,drive_file_id,drive_file_name,title&drive_file_id=eq.${encodeURIComponent(fileId)}&limit=1`;
+    const { response, error } = await supabaseRequest(req, res, session, path);
+    if (error) return json(res, 502, { error });
+    if (!response.ok) return json(res, 502, { error:'Não foi possível localizar o documento.' });
+    const rows = await response.json().catch(() => []);
+    const record = rows?.[0];
+    if (!record) return json(res, 404, { error:'Arquivo não encontrado para a sua organização.' });
+
+    let downloaded;
+    try {
+      downloaded = await drive.downloadFile(fileId, config);
+    } catch (error) {
+      return driveFailure(res, error);
+    }
+    const safeName = sanitizeUploadFileName(downloaded.name || record.drive_file_name || 'documento') || 'documento';
+    res.writeHead(200, {
+      'Content-Type':downloaded.mimeType,
+      'Content-Length':String(downloaded.content.length),
+      'Content-Disposition':`attachment; filename="${safeName.replace(/["\\]/g, '')}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
+      'Cache-Control':'private, no-store',
+      'X-Content-Type-Options':'nosniff'
+    });
+    res.end(downloaded.content);
+  }
+
+  function renderOAuthResultPage(res, { title, message, refreshToken = '', backLink = '/' }) {
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
+    const tokenBlock = refreshToken
+      ? `<label class="field" for="token">Refresh token gerado pelo Google</label>
+         <textarea id="token" readonly rows="3" onclick="this.select()">${esc(refreshToken)}</textarea>
+         <ol class="steps">
+           <li>Copie o valor acima.</li>
+           <li>No painel do Render, em <strong>Environment</strong>, defina <code>GOOGLE_REFRESH_TOKEN</code> com esse valor.</li>
+           <li>Aguarde o deploy e recarregue o portal: o Drive passa a aparecer como conectado.</li>
+         </ol>`
+      : '';
+    const body = `<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>${esc(title)} · Núcleo</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:#f4f6f2; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color:#1b2b22; }
+  main { width:min(560px, 92vw); background:#fff; border:1px solid #dfe4dc; border-radius:14px; padding:32px; box-shadow:0 12px 32px rgba(20,40,30,.08); }
+  h1 { font-size:20px; margin:0 0 8px; }
+  p { margin:0 0 16px; line-height:1.5; color:#41544a; font-size:14px; }
+  .field { display:block; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; }
+  textarea, code { width:100%; box-sizing:border-box; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+  textarea { padding:10px; border:1px solid #d3d9d1; border-radius:8px; background:#f7f9f6; resize:vertical; margin-bottom:18px; }
+  ol { padding-left:20px; font-size:13px; line-height:1.6; color:#41544a; }
+  a { color:#1f6b46; }
+</style></head>
+<body><main>
+<h1>${esc(title)}</h1>
+<p>${esc(message)}</p>
+${tokenBlock}
+<p><a href="${esc(backLink)}">Voltar ao portal</a></p>
+</main></body></html>`;
+    res.writeHead(200, {
+      'Content-Type':'text/html; charset=utf-8',
+      'Cache-Control':'no-store',
+      'X-Content-Type-Options':'nosniff',
+      'X-Robots-Tag':'noindex, nofollow',
+      'Referrer-Policy':'no-referrer'
+    });
+    res.end(body);
+  }
+
+  async function handleDriveOAuthUrl(req, res) {
+    if (!sameOrigin(req)) return json(res, 403, { error:'Origem não permitida.' });
+    if (!requireConfig(res)) return;
+    const session = await currentUser(req, res);
+    if (!session) { clearAuthCookies(res); return json(res, 401, { error:'Sessão expirada. Entre novamente.' }); }
+    const { response, error } = await supabaseRequest(req, res, session, `/rest/v1/organization_members?select=organization_id,role,user_id&user_id=eq.${encodeURIComponent(session.user.id)}&is_active=eq.true&limit=1`);
+    if (error) return json(res, 502, { error });
+    const membership = (await response.json().catch(() => []))?.[0];
+    if (!membership || !MANAGE_ROLES.has(membership.role)) {
+      return json(res, 403, { error:'Somente proprietário ou gestor pode conectar o Google Drive.' });
+    }
+    const config = drive.readConfig();
+    if (!drive.isReadyForOAuth(config)) {
+      return json(res, 503, { error:'Defina GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET no ambiente antes de conectar.' });
+    }
+    const state = crypto.randomBytes(24).toString('base64url');
+    const existing = res.getHeader('Set-Cookie');
+    const values = Array.isArray(existing) ? existing : (existing ? [existing] : []);
+    values.push(`${DRIVE_STATE_COOKIE}=${encodeURIComponent(state)}; ${cookieOptions(600)}`);
+    res.setHeader('Set-Cookie', values);
+    const redirectUri = `${PUBLIC_ORIGIN}/api/drive/oauth/callback`;
+    return json(res, 200, { url: drive.authorizeUrl({ redirectUri, state }, config), redirectUri });
+  }
+
+  async function handleDriveOAuthCallback(req, res, url) {
+    const state = url.searchParams.get('state') || '';
+    const expected = cookies(req)[DRIVE_STATE_COOKIE] || '';
+    const existing = res.getHeader('Set-Cookie');
+    const values = Array.isArray(existing) ? existing : (existing ? [existing] : []);
+    values.push(`${DRIVE_STATE_COOKIE}=; ${cookieOptions(0)}`);
+    res.setHeader('Set-Cookie', values);
+    if (!state || !expected || state !== expected) {
+      return renderOAuthResultPage(res, { title:'Não foi possível validar a conexão', message:'O estado de segurança não confere. Volte ao portal e inicie a conexão novamente.' });
+    }
+    const providerError = url.searchParams.get('error');
+    if (providerError) {
+      return renderOAuthResultPage(res, { title:'Conexão não autorizada', message:'O Google informou que a autorização foi negada ou cancelada. Nada foi alterado no ambiente.' });
+    }
+    const code = url.searchParams.get('code') || '';
+    if (!code || code.length > 512) {
+      return renderOAuthResultPage(res, { title:'Conexão incompleta', message:'O Google não devolveu um código de autorização válido. Tente novamente.' });
+    }
+    let exchanged;
+    try {
+      exchanged = await drive.exchangeCode({ code, redirectUri:`${PUBLIC_ORIGIN}/api/drive/oauth/callback` });
+    } catch (error) {
+      const message = error instanceof drive.DriveError ? error.message : 'Não foi possível concluir a conexão com o Google Drive.';
+      return renderOAuthResultPage(res, { title:'Falha ao concluir a conexão', message });
+    }
+    return renderOAuthResultPage(res, {
+      title:'Google Drive autorizado',
+      message:'Guarda o refresh token abaixo: ele é a credencial que mantém a integração ativa e não aparecerá novamente.',
+      refreshToken: exchanged.refreshToken
+    });
+  }
+
+  async function handleDrive(req, res, url) {
+    const pathname = url.pathname;
+    if (pathname === '/api/drive/oauth/callback' && req.method === 'GET') return await handleDriveOAuthCallback(req, res, url);
+    if (!sameOrigin(req)) return json(res, 403, { error:'Origem não permitida.' });
+    if (!requireConfig(res)) return;
+    if (pathname === '/api/drive/status' && req.method === 'GET') return await handleDriveStatus(req, res);
+    if (pathname === '/api/drive/oauth/url' && req.method === 'GET') return await handleDriveOAuthUrl(req, res);
+    if (pathname === '/api/drive/documents' && req.method === 'POST') {
+      const session = await currentUser(req, res);
+      if (!session) { clearAuthCookies(res); return json(res, 401, { error:'Sessão expirada. Entre novamente.' }); }
+      return await saveDriveDocument(req, res, session);
+    }
+    const replaceMatch = /^\/api\/drive\/documents\/([0-9a-f-]{36})\/file$/.exec(pathname);
+    if (replaceMatch && req.method === 'POST') {
+      const session = await currentUser(req, res);
+      if (!session) { clearAuthCookies(res); return json(res, 401, { error:'Sessão expirada. Entre novamente.' }); }
+      return await saveDriveDocument(req, res, session, { documentId: replaceMatch[1] });
+    }
+    const fileMatch = /^\/api\/drive\/files\/([A-Za-z0-9_-]{10,200})$/.exec(pathname);
+    if (fileMatch && req.method === 'GET') return await handleDriveFileDownload(req, res, fileMatch[1]);
+    return json(res, 404, { error:'Rota do Google Drive não encontrada.' });
+  }
+
 function serveStatic(res, pathname) {
   if (pathname === '/runtime-config.js') {
     res.writeHead(200, { 'Content-Type':'text/javascript; charset=utf-8', 'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff' });
@@ -381,6 +840,7 @@ function createServer() {
       }
       if (url.pathname.startsWith('/api/auth/')) return await handleAuth(req, res, url.pathname);
       if (url.pathname.startsWith('/api/data/')) return await handleData(req, res, url);
+      if (url.pathname.startsWith('/api/drive/')) return await handleDrive(req, res, url);
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error:'Método não permitido.' }, { Allow:'GET, HEAD' });
       return serveStatic(res, url.pathname);
     } catch (error) {
@@ -401,4 +861,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { createServer, isPublishableKey, validRuntimeConfig };
+module.exports = { createServer, isPublishableKey, validRuntimeConfig, readSupabaseMultipart:readMultipart, sanitizeUploadFileName, uploadTypeFor };

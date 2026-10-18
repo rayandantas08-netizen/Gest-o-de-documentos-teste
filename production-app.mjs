@@ -34,7 +34,15 @@ export function startProductionApp() {
   const announcer = document.getElementById('search-announcer');
   const toast = document.getElementById('toast');
   const ribbon = document.querySelector('.prototype-ribbon');
-  const state = { user:null, membership:null, organization:null, role:'viewer', view:'overview', query:'', department:'all', docFilter:'all', people:[], types:[], documents:[], busy:false };
+  const state = { user:null, membership:null, organization:null, role:'viewer', view:'overview', query:'', department:'all', docFilter:'all', people:[], types:[], documents:[], busy:false,
+    drive:{ configured:false, connected:false, loaded:false, mode:null, folder:null, account:null, reason:null, missing:[], maxUploadBytes:0, oauthReady:false } };
+  const DRIVE_REASONS = {
+    missing_configuration:'Faltam variáveis de ambiente do Google Drive no servidor.',
+    authorization_failed:'O Google recusou a autorização. Refaça a conexão nas configurações.',
+    invalid_folder:'A pasta configurada não é uma pasta válida do Google Drive.',
+    unreachable:'Não foi possível consultar o Google Drive agora.',
+    unavailable:'Não foi possível verificar o Google Drive neste momento.'
+  };
   let toastTimer;
   let pendingInvite = null;
   let dialogOpener = null;
@@ -42,12 +50,19 @@ export function startProductionApp() {
   document.title = 'Núcleo · Gestão documental';
   document.querySelector('meta[name="description"]')?.setAttribute('content','Gestão documental privada com acesso controlado por organização.');
   document.body.classList.add('production-mode');
-  if (ribbon) ribbon.innerHTML = '<span class="ribbon-dot" aria-hidden="true"></span><strong>Ambiente conectado</strong><span class="ribbon-divider" aria-hidden="true"></span><span>Acesso restrito · arquivos do Drive ainda não conectados</span>';
+  function ribbonHtml() {
+    const driveLabel = state.drive.connected && state.drive.folder
+      ? `Google Drive conectado · ${state.drive.folder.name}`
+      : 'arquivos do Drive ainda não conectados';
+    return `<span class="ribbon-dot live" aria-hidden="true"></span><strong>Ambiente conectado</strong><span class="ribbon-divider" aria-hidden="true"></span><span>Acesso restrito · ${esc(driveLabel)}</span>`;
+  }
+  if (ribbon) ribbon.innerHTML = ribbonHtml();
   document.querySelectorAll('.nav-count').forEach((node) => { node.textContent = '0'; node.hidden = true; });
   document.querySelector('.top-icon-button')?.setAttribute('hidden','');
 
   async function api(path, options = {}) {
-    const headers = { ...(options.body ? { 'Content-Type':'application/json' } : {}), ...(options.headers || {}) };
+    const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+    const headers = { ...(options.body && !isFormData ? { 'Content-Type':'application/json' } : {}), ...(options.headers || {}) };
     const response = await fetch(path, { ...options, headers, credentials:'same-origin', cache:'no-store' });
     const raw = await response.text();
     let payload = null;
@@ -82,7 +97,23 @@ export function startProductionApp() {
     if (more) { more.dataset.action = 'logout'; more.setAttribute('aria-label','Sair da conta'); more.textContent = '↗'; }
     const footer = document.querySelector('.page-footer');
     if (footer) footer.innerHTML = '<span>Núcleo · Ambiente conectado</span><span>Dados protegidos por associação à organização</span>';
+    if (ribbon) ribbon.innerHTML = ribbonHtml();
+    const integrationState = document.querySelector('.integration-state');
+    if (integrationState) {
+      integrationState.textContent = state.drive.connected ? 'CONECTADO' : 'PENDENTE';
+      integrationState.classList.toggle('connected', Boolean(state.drive.connected));
+    }
+    const integrationIcon = document.querySelector('.integration-icon');
+    if (integrationIcon) integrationIcon.classList.toggle('connected', Boolean(state.drive.connected));
+    const integrationLabel = document.querySelector('.integration-card > div:nth-child(2) span');
+    if (integrationLabel) {
+      integrationLabel.textContent = state.drive.connected
+        ? (state.drive.folder?.name || 'Pasta conectada')
+        : 'Integração pendente';
+    }
   }
+  function driveConnected() { return Boolean(state.drive.connected); }
+  function driveReasonLabel() { return DRIVE_REASONS[state.drive.reason] || ''; }
   function roleLabel(role) { return ({ owner:'Proprietário', manager:'Gestor', editor:'Editor', viewer:'Consulta' })[role] || 'Membro'; }
   function showLogin(message = '') {
     pendingInvite = null;
@@ -91,7 +122,7 @@ export function startProductionApp() {
     document.body.classList.remove('production-pending','production-connection-error');
     if (search) { search.value = ''; search.disabled = true; search.closest('.search-box')?.setAttribute('hidden',''); }
     content.innerHTML = `<section class="auth-screen" aria-labelledby="auth-title">
-      <div class="auth-story"><span class="auth-eyebrow">NÚCLEO · GESTÃO DOCUMENTAL</span><h1 id="auth-title">Documentos no lugar. Acesso sob controle.</h1><p>Entre com uma conta autorizada pela empresa para consultar os registros do seu espaço de trabalho.</p><div class="auth-trust"><span>01</span><div><strong>Dados por organização</strong><small>As consultas respeitam as permissões da sua equipe.</small></div></div><div class="auth-trust"><span>02</span><div><strong>Arquivos não expostos</strong><small>Google Drive ainda não está conectado neste ambiente.</small></div></div></div>
+      <div class="auth-story"><span class="auth-eyebrow">NÚCLEO · GESTÃO DOCUMENTAL</span><h1 id="auth-title">Documentos no lugar. Acesso sob controle.</h1><p>Entre com uma conta autorizada pela empresa para consultar os registros do seu espaço de trabalho.</p><div class="auth-trust"><span>01</span><div><strong>Dados por organização</strong><small>As consultas respeitam as permissões da sua equipe.</small></div></div><div class="auth-trust"><span>02</span><div><strong>Arquivos protegidos</strong><small>O download exige sessão ativa e vínculo à organização.</small></div></div></div>
       <div class="auth-card"><img src="./public/brand-mark.svg" width="42" height="42" alt=""><p class="page-kicker">ACESSO DA EQUIPE</p><h2>Entrar no Núcleo</h2><p class="auth-intro">Use o e-mail e a senha da conta que recebeu o convite.</p>
         <form id="login-form" novalidate><label class="form-field"><span>E-mail</span><input id="login-email" name="email" type="email" autocomplete="username" maxlength="254" required placeholder="nome@empresa.com"></label><label class="form-field"><span>Senha</span><input id="login-password" name="password" type="password" autocomplete="current-password" maxlength="1024" required placeholder="Sua senha"></label><p class="auth-error" id="login-error" role="alert" ${message ? '' : 'hidden'}>${esc(message)}</p><button class="button button-primary auth-submit" type="submit">Entrar <span aria-hidden="true">→</span></button></form>
         <p class="auth-help">Acesso somente por convite. <span>Solicite liberação ao administrador.</span></p></div>
@@ -232,6 +263,7 @@ export function startProductionApp() {
     state.organization = orgRows?.[0] || { id:membership.organization_id, name:'Espaço de trabalho' };
     prepareShell();
     await loadData();
+    await loadDriveStatus();
     renderView();
   }
   async function loadData() {
@@ -240,7 +272,7 @@ export function startProductionApp() {
     const [people, types, docs] = await Promise.all([
       api(queryUrl('people', { select:'id,full_name,job_title,department,company_name,is_active,created_at', organization_id:orgFilter, is_active:'eq.true', order:'full_name.asc', limit:'500' })),
       api(queryUrl('document_types', { select:'id,name,category,validity_months,is_required', organization_id:orgFilter, order:'name.asc', limit:'500' })),
-      api(queryUrl('documents', { select:'id,title,person_id,document_type_id,expires_on,review_status,created_at', organization_id:orgFilter, order:'expires_on.asc', limit:'500' }))
+      api(queryUrl('documents', { select:'id,title,person_id,document_type_id,expires_on,review_status,created_at,drive_file_id,drive_file_name,mime_type', organization_id:orgFilter, order:'expires_on.asc', limit:'500' }))
     ]);
     state.people = Array.isArray(people) ? people : [];
     state.types = Array.isArray(types) ? types : [];
@@ -251,6 +283,14 @@ export function startProductionApp() {
     const docsCount = document.querySelector('[data-view="documents"] .nav-count');
     if (peopleCount) { peopleCount.textContent = String(state.people.length); peopleCount.hidden = false; }
     if (docsCount) { docsCount.textContent = String(state.documents.length); docsCount.hidden = false; }
+  }
+  async function loadDriveStatus() {
+    try {
+      const status = await api('/api/drive/status');
+      state.drive = { ...state.drive, ...status, loaded:true };
+    } catch {
+      state.drive = { ...state.drive, configured:false, connected:false, loaded:true, reason:'unavailable' };
+    }
   }
   function writable() { return ['owner','manager','editor'].includes(state.role); }
   function dateLabel(value) { if (!value) return 'Sem vencimento'; const date = new Date(`${value}T00:00:00`); return Number.isNaN(date.valueOf()) ? '—' : new Intl.DateTimeFormat('pt-BR').format(date); }
@@ -277,6 +317,20 @@ export function startProductionApp() {
     });
   }
   function attentionRow(doc) { return `<div class="attention-row"><div class="document-ident"><span class="file-mark pdf" aria-hidden="true">DOC</span><span><strong>${esc(docName(doc))}</strong><small>${esc(doc.person?.full_name || 'Sem pessoa vinculada')} · ${esc(doc.type?.name || 'Sem tipo')}</small></span></div><span class="due-date">${esc(dateLabel(doc.expires_on))}</span>${pill(expiryStatus(doc))}</div>`; }
+  function drivePanel() {
+    if (driveConnected()) {
+      return `<article class="panel"><div class="panel-header"><div><p class="panel-kicker">INTEGRAÇÃO DE ARQUIVOS</p><h2 class="panel-title">Google Drive</h2></div>${pill('valid','Conectado')}</div>
+        <div class="setting-row"><span><strong>Pasta de destino</strong><small>Para onde vão os arquivos enviados</small></span><span class="setting-value">${esc(state.drive.folder?.name || '—')}</span></div>
+        <div class="setting-row"><span><strong>Conta autorizada</strong><small>Proprietária da pasta no Drive</small></span><span class="setting-value">${esc(state.drive.account?.email || '—')}</span></div>
+        <p class="settings-note">O download passa pelo servidor, que confere se o documento pertence à sua organização antes de liberar o arquivo.</p>
+        ${state.drive.folder?.webViewLink ? `<a class="table-action" href="${esc(state.drive.folder.webViewLink)}" target="_blank" rel="noopener noreferrer">Abrir pasta no Drive ↗</a>` : ''}
+        <button class="table-action" type="button" data-action="drive-info">Como os arquivos são protegidos</button></article>`;
+    }
+    return `<article class="panel"><div class="panel-header"><div><p class="panel-kicker">INTEGRAÇÃO DE ARQUIVOS</p><h2 class="panel-title">Google Drive</h2></div>${pill('pending','Pendente')}</div>
+      <p class="settings-note">O banco guarda os metadados. ${esc(driveReasonLabel() || 'O envio e o download de arquivos ficam bloqueados até a integração ser configurada.')}</p>
+      ${state.drive.oauthReady ? '<button class="table-action" type="button" data-action="connect-drive">Conectar Google Drive</button>' : ''}
+      <button class="table-action" type="button" data-action="drive-info">Entender o status</button></article>`;
+  }
   function renderOverview() {
     const all = state.documents; const soon = all.filter((doc) => expiryStatus(doc) === 'soon'); const expired = all.filter((doc) => expiryStatus(doc) === 'expired'); const valid = all.filter((doc) => expiryStatus(doc) === 'valid');
     const q = state.query.trim().toLocaleLowerCase('pt-BR');
@@ -287,7 +341,7 @@ export function startProductionApp() {
       <section class="stats-grid" aria-label="Indicadores atuais">${stat('Pessoas ativas',state.people.length,'Registros autorizados','♙')}${stat('Documentos',all.length,'Metadados cadastrados','▤')}${stat('A vencer',soon.length,'Próximos 30 dias','◷','warning')}${stat('Vencidos',expired.length,'Precisam de atenção','!','danger')}</section>
       <section class="dashboard-grid"><article class="panel"><div class="panel-header"><div><p class="panel-kicker">ATENÇÃO NECESSÁRIA</p><h2 class="panel-title">Prazos em destaque</h2></div><button class="panel-link" type="button" data-view="documents">Ver documentos →</button></div><div class="attention-list">${attention.length ? attention.map(attentionRow).join('') : empty(q ? 'Nenhuma pendência encontrada' : 'Nenhuma pendência por enquanto',q ? 'Tente outro termo de busca.' : 'Prazos e documentos aparecerão aqui quando forem cadastrados.')}</div></article>
       <article class="completion-panel"><p class="panel-kicker">PANORAMA DOCUMENTAL</p><h2 class="panel-title">Acompanhe o que está em dia.</h2><p class="completion-copy">Resumo calculado sobre os registros visíveis para sua organização.</p><div class="progress-row"><span>Sem vencimento nos próximos 30 dias</span><strong>${ratio}%</strong></div><div class="progress-track" role="img" aria-label="${ratio}% dos documentos sem vencimento nos próximos 30 dias"><div class="progress-fill" style="width:${ratio}%"></div></div><p class="completion-note">${valid.length} de ${all.length} documentos em dia ou sem vencimento.</p></article></section>
-      <section class="secondary-grid"><article class="panel"><div class="panel-header"><div><p class="panel-kicker">INTEGRAÇÃO DE ARQUIVOS</p><h2 class="panel-title">Google Drive</h2></div>${pill('pending','Pendente')}</div><p class="settings-note">O banco guarda metadados. A leitura, prévia e download de arquivos ficam bloqueados até configurar OAuth e permissões do Drive.</p><button class="table-action" type="button" data-action="drive-info">Entender o status</button></article><article class="panel"><div class="panel-header"><div><p class="panel-kicker">ATALHOS</p><h2 class="panel-title">Ações rápidas</h2></div></div><div class="quick-actions">${writable() ? `<button class="quick-action" type="button" data-action="new-person"><span class="quick-action-icon">＋</span><span><strong>Cadastrar pessoa</strong><small>Registro persistido com RLS</small></span></button><button class="quick-action" type="button" data-action="new-document"><span class="quick-action-icon">＋</span><span><strong>Adicionar documento</strong><small>Metadados, sem arquivo nesta fase</small></span></button><button class="quick-action" type="button" data-action="new-type"><span class="quick-action-icon">⌑</span><span><strong>Novo tipo documental</strong><small>Regras da organização</small></span></button>` : '<p class="settings-note">Seu perfil permite consulta, mas não edição.</p>'}</div></article></section>`;
+      <section class="secondary-grid">${drivePanel()}<article class="panel"><div class="panel-header"><div><p class="panel-kicker">ATALHOS</p><h2 class="panel-title">Ações rápidas</h2></div></div><div class="quick-actions">${writable() ? `<button class="quick-action" type="button" data-action="new-person"><span class="quick-action-icon">＋</span><span><strong>Cadastrar pessoa</strong><small>Registro persistido com RLS</small></span></button><button class="quick-action" type="button" data-action="new-document"><span class="quick-action-icon">＋</span><span><strong>Adicionar documento</strong><small>Metadados, sem arquivo nesta fase</small></span></button><button class="quick-action" type="button" data-action="new-type"><span class="quick-action-icon">⌑</span><span><strong>Novo tipo documental</strong><small>Regras da organização</small></span></button>` : '<p class="settings-note">Seu perfil permite consulta, mas não edição.</p>'}</div></article></section>`;
   }
   function personRow(person) {
     const count = state.documents.filter((doc) => doc.person_id === person.id).length;
@@ -303,11 +357,18 @@ export function startProductionApp() {
   function documentRow(doc) {
     const status = expiryStatus(doc); const review = doc.review_status || 'pending';
     const person = doc.person?.full_name || 'Sem pessoa vinculada'; const type = doc.type?.name || 'Sem tipo';
-    return `<tr><td data-label="Documento"><span class="doc-name"><span class="file-mark pdf" aria-hidden="true">DOC</span><span><strong>${esc(docName(doc))}</strong><small>Metadados registrados</small></span></span></td><td data-label="Pessoa">${esc(person)}</td><td data-label="Tipo">${esc(type)}</td><td data-label="Vencimento">${esc(dateLabel(doc.expires_on))}</td><td data-label="Status">${pill(status)} <span class="review-label">${pill(review)}</span></td><td data-label="Ações">${writable() ? `<button class="table-action" type="button" data-action="edit-document" data-id="${esc(doc.id)}">Editar</button>` : 'Somente consulta'}<button class="table-action drive-disabled" type="button" disabled title="Integração Google Drive pendente">Arquivo indisponível</button></td></tr>`;
+    const fileAction = doc.drive_file_id
+      ? `<a class="table-action" href="/api/drive/files/${encodeURIComponent(doc.drive_file_id)}" target="_blank" rel="noopener noreferrer" title="Baixar ${esc(doc.drive_file_name || 'arquivo')}">Baixar arquivo ↗</a>`
+      : '<span class="table-note">Sem arquivo</span>';
+    const fileLabel = doc.drive_file_name ? esc(doc.drive_file_name) : 'Somente metadados';
+    return `<tr><td data-label="Documento"><span class="doc-name"><span class="file-mark pdf" aria-hidden="true">DOC</span><span><strong>${esc(docName(doc))}</strong><small>${fileLabel}</small></span></span></td><td data-label="Pessoa">${esc(person)}</td><td data-label="Tipo">${esc(type)}</td><td data-label="Vencimento">${esc(dateLabel(doc.expires_on))}</td><td data-label="Status">${pill(status)} <span class="review-label">${pill(review)}</span></td><td data-label="Ações">${writable() ? `<button class="table-action" type="button" data-action="edit-document" data-id="${esc(doc.id)}">Editar</button>` : 'Somente consulta'}${fileAction}</td></tr>`;
   }
   function renderDocuments() {
     const rows = filteredDocuments(); const action = writable() ? button('new-document','Adicionar documento') : '';
-    return `${disclaimer()}${header('CONTROLE DE VALIDADE','Documentos','Metadados e prazos. Arquivos do Drive ainda não estão conectados.',action)}<div class="toolbar"><div class="toolbar-left"><select class="filter-select" id="document-filter" aria-label="Filtrar documentos por vencimento"><option value="all" ${state.docFilter === 'all' ? 'selected' : ''}>Todos os prazos</option><option value="valid" ${state.docFilter === 'valid' ? 'selected' : ''}>Em dia</option><option value="soon" ${state.docFilter === 'soon' ? 'selected' : ''}>A vencer</option><option value="expired" ${state.docFilter === 'expired' ? 'selected' : ''}>Vencidos</option></select></div><p class="result-count">${rows.length} documentos</p></div><section class="panel table-panel"><div class="table-scroll"><table class="document-table"><thead><tr><th>DOCUMENTO</th><th>PESSOA</th><th>TIPO</th><th>VENCIMENTO</th><th>STATUS</th><th>AÇÕES</th></tr></thead><tbody>${rows.map(documentRow).join('') || `<tr><td colspan="6">${empty(state.documents.length ? 'Nenhum documento encontrado' : 'Ainda não há documentos',state.documents.length ? 'Altere a busca ou o filtro.' : (writable() ? 'Cadastre metadados para começar; arquivos ainda não serão enviados.' : 'Peça ao gestor para cadastrar documentos.'))}</td></tr>`}</tbody></table></div></section>`;
+    const subtitle = driveConnected() && state.drive.folder
+      ? `Metadados e prazos, com arquivos na pasta ${state.drive.folder.name}.`
+      : 'Metadados e prazos. Os arquivos do Google Drive ainda não estão conectados.';
+    return `${disclaimer()}${header('CONTROLE DE VALIDADE','Documentos',subtitle,action)}<div class="toolbar"><div class="toolbar-left"><select class="filter-select" id="document-filter" aria-label="Filtrar documentos por vencimento"><option value="all" ${state.docFilter === 'all' ? 'selected' : ''}>Todos os prazos</option><option value="valid" ${state.docFilter === 'valid' ? 'selected' : ''}>Em dia</option><option value="soon" ${state.docFilter === 'soon' ? 'selected' : ''}>A vencer</option><option value="expired" ${state.docFilter === 'expired' ? 'selected' : ''}>Vencidos</option></select></div><p class="result-count">${rows.length} documentos</p></div><section class="panel table-panel"><div class="table-scroll"><table class="document-table"><thead><tr><th>DOCUMENTO</th><th>PESSOA</th><th>TIPO</th><th>VENCIMENTO</th><th>STATUS</th><th>AÇÕES</th></tr></thead><tbody>${rows.map(documentRow).join('') || `<tr><td colspan="6">${empty(state.documents.length ? 'Nenhum documento encontrado' : 'Ainda não há documentos',state.documents.length ? 'Altere a busca ou o filtro.' : (writable() ? 'Cadastre metadados para começar; arquivos ainda não serão enviados.' : 'Peça ao gestor para cadastrar documentos.'))}</td></tr>`}</tbody></table></div></section>`;
   }
   function renderTypes() {
     const q = state.query.trim().toLocaleLowerCase('pt-BR');
@@ -316,7 +377,7 @@ export function startProductionApp() {
     return `${disclaimer()}${header('ESTRUTURA DOCUMENTAL','Tipos documentais','Categorias e regras de validade da organização.',action)}<div class="toolbar"><p class="result-count">${types.length} tipos</p></div><section class="type-grid">${types.map((type) => { const count = state.documents.filter((doc) => doc.document_type_id === type.id).length; const renewal = type.validity_months ? `A cada ${type.validity_months} meses` : 'Sem regra de vencimento'; return `<article class="type-card"><div class="type-card-top"><span class="type-icon" aria-hidden="true">⌑</span><span class="type-tag ${type.is_required ? '' : 'optional'}">${type.is_required ? 'OBRIGATÓRIO' : 'OPCIONAL'}</span></div><h3>${esc(type.name)}</h3><p>Categoria: ${esc(type.category || '—')}</p><div class="type-card-bottom"><span>Validade <strong>${esc(renewal)}</strong></span><span>${count} documentos</span></div>${writable() ? `<button class="table-action" type="button" data-action="edit-type" data-id="${esc(type.id)}">Editar tipo</button>` : ''}</article>`; }).join('') || empty('Nenhum tipo cadastrado',q ? 'Ajuste sua busca.' : (writable() ? 'Crie tipos para padronizar os registros.' : 'Peça ao gestor para configurar os tipos.'))}</section>`;
   }
   function renderSettings() {
-    return `${disclaimer()}${header('ADMINISTRAÇÃO','Configurações','Informações do seu ambiente e permissões atuais.')}<section class="settings-grid"><article class="panel settings-card"><h2>Conta e dados</h2><p>As permissões são aplicadas no banco por organização e perfil.</p><div class="setting-row"><span><strong>Organização</strong><small>Espaço associado à sua conta</small></span><span class="setting-value">${esc(state.organization?.name || '—')}</span></div><div class="setting-row"><span><strong>Conta conectada</strong><small>${esc(state.user?.email || '')}</small></span><span class="setting-value">${esc(roleLabel(state.role).toLocaleUpperCase('pt-BR'))}</span></div><div class="setting-row"><span><strong>Banco de dados</strong><small>Supabase · políticas RLS</small></span><span class="setting-value">CONECTADO</span></div><div class="setting-row"><span><strong>Arquivos</strong><small>OAuth e permissões do Google Drive</small></span><span class="setting-value pending">PENDENTE</span></div><div class="setting-row"><span><strong>Permissão de escrita</strong><small>Definida pelo perfil da sua conta</small></span><span class="setting-value ${writable() ? '' : 'pending'}">${writable() ? 'ATIVA' : 'SOMENTE LEITURA'}</span></div></article><aside class="future-card"><p class="panel-kicker">ESTADO DA INTEGRAÇÃO</p><h2>Proteção primeiro.</h2><p>Nenhum documento é exibido ou enviado sem uma conexão Google autorizada. O banco guarda registros e metadados; as permissões do Drive serão respeitadas quando a integração estiver configurada.</p><button class="button button-secondary" type="button" data-action="logout">Encerrar sessão</button></aside></section>`;
+    return `${disclaimer()}${header('ADMINISTRAÇÃO','Configurações','Informações do seu ambiente e permissões atuais.')}<section class="settings-grid"><article class="panel settings-card"><h2>Conta e dados</h2><p>As permissões são aplicadas no banco por organização e perfil.</p><div class="setting-row"><span><strong>Organização</strong><small>Espaço associado à sua conta</small></span><span class="setting-value">${esc(state.organization?.name || '—')}</span></div><div class="setting-row"><span><strong>Conta conectada</strong><small>${esc(state.user?.email || '')}</small></span><span class="setting-value">${esc(roleLabel(state.role).toLocaleUpperCase('pt-BR'))}</span></div><div class="setting-row"><span><strong>Banco de dados</strong><small>Supabase · políticas RLS</small></span><span class="setting-value">CONECTADO</span></div><div class="setting-row"><span><strong>Arquivos</strong><small>${driveConnected() ? esc(state.drive.folder?.name || 'Google Drive') : 'OAuth e permissões do Google Drive'}</small></span><span class="setting-value ${driveConnected() ? '' : 'pending'}">${driveConnected() ? 'CONECTADO' : 'PENDENTE'}</span></div>${driveConnected() && state.drive.account ? `<div class="setting-row"><span><strong>Conta do Drive</strong><small>Autorização server-side</small></span><span class="setting-value">${esc(state.drive.account.email)}</span></div>` : ''}${!driveConnected() && state.drive.oauthReady ? '<button class="table-action" type="button" data-action="connect-drive">Conectar minha conta do Google</button>' : ''}<div class="setting-row"><span><strong>Permissão de escrita</strong><small>Definida pelo perfil da sua conta</small></span><span class="setting-value ${writable() ? '' : 'pending'}">${writable() ? 'ATIVA' : 'SOMENTE LEITURA'}</span></div></article><aside class="future-card"><p class="panel-kicker">ESTADO DA INTEGRAÇÃO</p><h2>Proteção primeiro.</h2><p>${driveConnected() ? `Os arquivos vão para a pasta ${esc(state.drive.folder?.name || 'configurada')} usando uma autorização guardada no servidor — nenhuma credencial fica no navegador. O download só é liberado depois de conferir que o documento pertence à sua organização.` : 'Sem autorização ativa, o portal guarda apenas registros e metadados: nenhum arquivo é enviado ou baixado. As permissões do Drive passam a valer assim que a integração for configurada.'}</p><button class="button button-secondary" type="button" data-action="logout">Encerrar sessão</button></aside></section>`;
   }
   function renderView() {
     if (!state.membership || !state.organization) return showPending();
@@ -334,6 +395,17 @@ export function startProductionApp() {
     if (options.select) return `<label class="form-field" for="${id}"><span>${esc(label)}</span><select id="${id}" name="${name}" ${required}>${options.select}</select></label>`;
     return `<label class="form-field" for="${id}"><span>${esc(label)}</span><input id="${id}" name="${name}" type="${options.type || 'text'}" value="${esc(value)}" ${required} maxlength="${max}" ${options.min ? `min="${options.min}"` : ''} ${options.max ? `max="${options.max}"` : ''} ${options.step ? `step="${options.step}"` : ''}></label>`;
   }
+  function documentFileField(record) {
+    if (!driveConnected()) {
+      return `<p class="drive-hint">Sem conexão com o Google Drive neste ambiente: o registro será salvo apenas com os metadados.${driveReasonLabel() ? ` ${esc(driveReasonLabel())}` : ''}</p>`;
+    }
+    const limitMb = state.drive.maxUploadBytes ? Math.round(state.drive.maxUploadBytes / 1024 / 1024) : 25;
+    const current = record?.drive_file_name
+      ? `<p class="drive-hint connected">Arquivo atual no Drive: <strong>${esc(record.drive_file_name)}</strong>. Envie outro arquivo para substituí-lo.</p>`
+      : `<p class="drive-hint connected">Destino: pasta <strong>${esc(state.drive.folder?.name || 'Google Drive')}</strong> · até ${limitMb} MB por arquivo.</p>`;
+    return `${current}<label class="form-field" for="field-file"><span>${record?.drive_file_name ? 'Substituir arquivo (opcional)' : 'Arquivo do documento'}</span><input id="field-file" name="file" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.rtf,.odt,.ods,.odp,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.heic"></label>`;
+  }
+
   function showForm(kind, record = null) {
     if (!writable()) return showToast('Seu perfil não permite alterações.');
     dialogOpener = document.activeElement;
@@ -349,7 +421,7 @@ export function startProductionApp() {
       title = isEdit ? 'Editar documento' : 'Adicionar documento';
       const personOptions = `<option value="">Sem pessoa vinculada</option>${state.people.map((p) => `<option value="${esc(p.id)}" ${record?.person_id === p.id ? 'selected' : ''}>${esc(p.full_name)}</option>`).join('')}`;
       const typeOptions = `<option value="">Sem tipo definido</option>${state.types.map((t) => `<option value="${esc(t.id)}" ${record?.document_type_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}`;
-      fields = formField('Título do registro','title',record?.title || '',{required:true,maxlength:200}) + formField('Pessoa','person_id','',{select:personOptions}) + formField('Tipo documental','document_type_id','',{select:typeOptions}) + formField('Data de vencimento (opcional)','expires_on',record?.expires_on || '',{type:'date'}) + '<p class="drive-hint">Arquivo não enviado: a integração Google Drive ainda está pendente.</p>';
+      fields = formField('Título do registro','title',record?.title || '',{required:true,maxlength:200}) + formField('Pessoa','person_id','',{select:personOptions}) + formField('Tipo documental','document_type_id','',{select:typeOptions}) + formField('Data de vencimento (opcional)','expires_on',record?.expires_on || '',{type:'date'}) + documentFileField(record);
     }
     dialogContent.innerHTML = `<div class="dialog-head"><div><p class="dialog-kicker">DADOS DA ORGANIZAÇÃO</p><h2 id="dialog-title">${esc(title)}</h2></div><button class="dialog-close" type="button" data-dialog-close aria-label="Fechar">×</button></div><div class="dialog-body"><form id="record-form" data-kind="${kind}" data-id="${esc(record?.id || '')}">${fields}<p class="dialog-error" id="record-error" role="alert" hidden></p><div class="dialog-actions"><button class="button button-secondary" type="button" data-dialog-close>Cancelar</button><button class="button button-primary" type="submit">${isEdit ? 'Salvar alterações' : 'Salvar registro'}</button></div></form></div>`;
     dialog.showModal();
@@ -373,17 +445,49 @@ export function startProductionApp() {
     }
     if (id) delete body.organization_id;
     const errorBox = document.getElementById('record-error'); const submit = form.querySelector('[type="submit"]');
-    submit.disabled = true; submit.textContent = 'Salvando…';
+    const fileInput = form.querySelector('input[type="file"][name="file"]');
+    const hasFile = Boolean(fileInput?.files?.length);
+    submit.disabled = true; submit.textContent = hasFile ? 'Enviando ao Google Drive…' : 'Salvando…';
     try {
       const query = id ? `?id=eq.${encodeURIComponent(id)}&organization_id=eq.${encodeURIComponent(state.membership.organization_id)}` : '';
-      await api(`/api/data/${table}${query}`, { method:id ? 'PATCH' : 'POST', body:JSON.stringify(body) });
+      if (kind === 'document' && hasFile) {
+        // O envio do arquivo e o registro no banco acontecem na mesma requisição:
+        // se o banco recusar, o servidor descarta o arquivo no Drive.
+        if (id) await api(`/api/data/${table}${query}`, { method:'PATCH', body:JSON.stringify(body) });
+        const payload = new FormData(form);
+        payload.set('organization_id', state.membership.organization_id);
+        const previous = state.documents.find((doc) => doc.id === id);
+        if (previous?.drive_file_id) payload.set('previous_file_id', previous.drive_file_id);
+        await api(id ? `/api/drive/documents/${encodeURIComponent(id)}/file` : '/api/drive/documents', { method:'POST', body:payload });
+      } else {
+        await api(`/api/data/${table}${query}`, { method:id ? 'PATCH' : 'POST', body:JSON.stringify(body) });
+      }
       dialog.close();
-      try { await loadData(); renderView(); showToast(id ? 'Alterações salvas.' : 'Registro salvo.'); }
+      const savedWithFile = kind === 'document' && hasFile;
+      try { await loadData(); renderView(); showToast(savedWithFile ? 'Arquivo enviado ao Google Drive e registro salvo.' : (id ? 'Alterações salvas.' : 'Registro salvo.')); }
       catch { showConnectionError(); showToast('Registro salvo; a lista não pôde ser atualizada.'); }
     } catch (error) {
       if (errorBox) { errorBox.textContent = error.message; errorBox.hidden = false; }
       submit.disabled = false; submit.textContent = id ? 'Salvar alterações' : 'Salvar registro';
     }
+  }
+  async function connectDrive() {
+    if (state.busy) return;
+    state.busy = true;
+    try {
+      const { url } = await api('/api/drive/oauth/url');
+      window.location.assign(url);
+    } catch (error) {
+      state.busy = false;
+      showToast(error.message || 'Não foi possível iniciar a conexão com o Google Drive.');
+    }
+  }
+  function showDriveInfo() {
+    if (driveConnected()) {
+      showInfo('Google Drive conectado', `Os arquivos enviados pelo portal são gravados na pasta ${state.drive.folder?.name || 'configurada'} da conta ${state.drive.account?.email || 'autorizada'}. O download passa pelo servidor, que confere se o documento pertence à sua organização antes de liberar o arquivo, e a autorização do Google fica somente no servidor.`);
+      return;
+    }
+    showInfo('Google Drive pendente', `${driveReasonLabel() || 'A integração ainda não foi configurada neste ambiente.'} Enquanto isso o portal segue funcionando com pessoas, tipos e controle de vencimentos, mas sem envio ou download de arquivos.`);
   }
   async function logout() {
     try { await fetch('/api/auth/logout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'}}); } catch { /* sessão local é limpa visualmente */ }
@@ -414,11 +518,13 @@ export function startProductionApp() {
       else if (type === 'edit-document') showForm('document',record);
       else if (type === 'logout') logout();
       else if (type === 'retry-load') { action.disabled = true; action.textContent = 'Tentando…'; await loadAuthenticatedWorkspace(); }
-      else if (type === 'drive-info') showInfo('Google Drive pendente','O arquivo não está acessível nesta implantação. Antes de habilitar prévia ou download, será necessário configurar OAuth, validar a pasta autorizada e aplicar as permissões por usuário.');
+      else if (type === 'drive-info') showDriveInfo();
+      else if (type === 'connect-drive') connectDrive();
     }
     if (event.target.closest('[data-dialog-close]') && dialog.open) dialog.close();
   });
   document.addEventListener('input', (event) => { if (event.target === search) { state.query = search.value; renderView(); } });
+
   document.addEventListener('change', (event) => {
     if (event.target.id === 'department-filter') { state.department = event.target.value; renderView(); }
     if (event.target.id === 'document-filter') { state.docFilter = event.target.value; renderView(); }
